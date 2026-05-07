@@ -1,0 +1,6 @@
+# 主定义已迁至仓库根目录 compose.yaml（便于在 ~/agentflow-platform 下直接 docker compose up）。
+# 仍可使用本文件（通过 include 引用根配置）：
+#   docker compose -f app/core/docker-compose.yml up -d
+
+include:
+  - path: ../../compose.yaml
