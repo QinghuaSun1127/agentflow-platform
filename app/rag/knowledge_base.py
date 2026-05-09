@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import io
+import hashlib
+import math
 import os
+import re
 from typing import Any
 
 import psycopg2
-from langchain_huggingface import HuggingFaceEmbeddings
 from pgvector.psycopg2 import register_vector
 from psycopg2.extensions import connection as PgConnection
 from pypdf import PdfReader
@@ -22,24 +24,83 @@ DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0"))
 DEFAULT_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "650"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
 
-_embeddings_instance: HuggingFaceEmbeddings | None = None
+_embeddings_instance: "LocalHashEmbeddings | Any | None" = None
+
+
+class LocalHashEmbeddings:
+    """Small deterministic embedding backend for demos without downloading ML models."""
+
+    def _features(self, text: str) -> list[str]:
+        lowered = text.lower()
+        words = re.findall(r"[a-z0-9_]+", lowered)
+        cjk_chars = re.findall(r"[\u4e00-\u9fff]", lowered)
+        cjk_bigrams = ["".join(cjk_chars[idx : idx + 2]) for idx in range(max(0, len(cjk_chars) - 1))]
+        return words + cjk_chars + cjk_bigrams
+
+    def _embed(self, text: str) -> list[float]:
+        vector = [0.0] * EMBEDDING_DIM
+        for feature in self._features(text):
+            digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
+            bucket = int.from_bytes(digest[:4], "big") % EMBEDDING_DIM
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[bucket] += sign
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed(text)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in texts]
+
+
+def _keyword_terms(query: str) -> list[str]:
+    """Extract short keyword terms for lexical fallback retrieval."""
+    lowered = query.lower()
+    terms: list[str] = []
+    terms.extend(word for word in re.findall(r"[a-z0-9_]+", lowered) if len(word) >= 2)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", lowered)
+    terms.extend("".join(cjk_chars[idx : idx + 2]) for idx in range(max(0, len(cjk_chars) - 1)))
+
+    seen: set[str] = set()
+    unique_terms: list[str] = []
+    for term in terms:
+        if term and term not in seen:
+            seen.add(term)
+            unique_terms.append(term)
+    return unique_terms[:16]
+
+
+def _keyword_score(text: str, terms: list[str]) -> int:
+    lowered = text.lower()
+    return sum(1 for term in terms if term in lowered)
 
 
 def _database_url() -> str:
     return os.getenv("DATABASE_URL", get_database_url())
 
 
-def get_embeddings() -> HuggingFaceEmbeddings:
-    """懒加载 HuggingFace 中文句向量模型（768 维）。"""
+def get_embeddings() -> LocalHashEmbeddings | Any:
+    """Return embeddings backend.
+
+    Default to a deterministic local backend so demo deployments do not need
+    HuggingFace/Torch downloads. Set RAG_EMBEDDING_BACKEND=huggingface to use
+    the heavier sentence-transformers model.
+    """
     global _embeddings_instance
     if _embeddings_instance is None:
-        _embeddings_instance = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            # 归一化后 pgvector 的 <=> 与余弦相似度语义一致，便于按距离排序
-            encode_kwargs={"normalize_embeddings": True},
-            query_encode_kwargs={"normalize_embeddings": True},
-        )
+        if os.getenv("RAG_EMBEDDING_BACKEND", "local").strip().lower() == "huggingface":
+            from langchain_huggingface import HuggingFaceEmbeddings
+
+            _embeddings_instance = HuggingFaceEmbeddings(
+                model_name=EMBEDDING_MODEL,
+                model_kwargs={"device": "cpu"},
+                # 归一化后 pgvector 的 <=> 与余弦相似度语义一致，便于按距离排序
+                encode_kwargs={"normalize_embeddings": True},
+                query_encode_kwargs={"normalize_embeddings": True},
+            )
+        else:
+            _embeddings_instance = LocalHashEmbeddings()
     return _embeddings_instance
 
 
@@ -185,10 +246,10 @@ def search_document_chunks(query: str, top_k: int = 3) -> list[dict[str, Any]]:
             ORDER BY embedding <=> %s::vector
             LIMIT %s;
             """,
-            (vec, vec, top_k),
+            (vec, vec, max(top_k, 6)),
         )
         rows: list[tuple[Any, ...]] = cur.fetchall()
-        return [
+        chunks = [
             {
                 "title": str(row[0]),
                 "content": str(row[1]),
@@ -196,10 +257,58 @@ def search_document_chunks(query: str, top_k: int = 3) -> list[dict[str, Any]]:
                 "page_number": int(row[3]) if row[3] is not None else None,
                 "document_id": int(row[4]) if row[4] is not None else None,
                 "similarity": float(row[5]),
+                "keyword_score": 0,
             }
             for row in rows
             if float(row[5]) >= DEFAULT_SIMILARITY_THRESHOLD
         ]
+
+        terms = _keyword_terms(q)
+        if terms:
+            clauses = " OR ".join(["(title ILIKE %s OR content ILIKE %s OR source ILIKE %s)" for _ in terms])
+            params: list[Any] = []
+            for term in terms:
+                pattern = f"%{term}%"
+                params.extend([pattern, pattern, pattern])
+            cur.execute(
+                f"""
+                SELECT title, content, source, page_number, document_id
+                FROM knowledge_base
+                WHERE {clauses}
+                LIMIT %s;
+                """,
+                [*params, max(top_k * 4, 12)],
+            )
+            for row in cur.fetchall():
+                content = str(row[1])
+                chunks.append(
+                    {
+                        "title": str(row[0]),
+                        "content": content,
+                        "source": str(row[2]),
+                        "page_number": int(row[3]) if row[3] is not None else None,
+                        "document_id": int(row[4]) if row[4] is not None else None,
+                        "similarity": 0.0,
+                        "keyword_score": _keyword_score(" ".join([str(row[0]), content, str(row[2])]), terms),
+                    }
+                )
+
+        deduped: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for chunk in chunks:
+            key = (chunk["source"], chunk["page_number"], chunk["content"])
+            existing = deduped.get(key)
+            if existing is None:
+                deduped[key] = chunk
+            else:
+                existing["similarity"] = max(float(existing["similarity"]), float(chunk["similarity"]))
+                existing["keyword_score"] = max(int(existing["keyword_score"]), int(chunk["keyword_score"]))
+
+        ranked = sorted(
+            deduped.values(),
+            key=lambda item: (int(item["keyword_score"]), float(item["similarity"])),
+            reverse=True,
+        )
+        return ranked[:top_k]
     finally:
         conn.close()
 

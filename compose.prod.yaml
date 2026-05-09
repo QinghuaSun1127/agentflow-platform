@@ -52,7 +52,7 @@ services:
         max-file: "5"
 
   postgres-vector:
-    image: ankane/pgvector:v0.5.1
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -72,7 +72,8 @@ services:
         max-file: "5"
 
   redis:
-    image: redis:7-alpine
+    # AWS 公共库中的 Docker Official Image；在部分网络/镜像加速下比 docker.io 更易拉取
+    image: public.ecr.aws/docker/library/redis:7-alpine
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     volumes:
       - redisdata:/data

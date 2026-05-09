@@ -1,11 +1,21 @@
-FROM python:3.12-slim
+# Use AWS public mirror of Docker Official Image (avoids docker.io timeouts on some networks).
+FROM public.ecr.aws/docker/library/python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 WORKDIR /app
 
-RUN apt-get update \
+# Use Aliyun Debian mirror during build (avoid deb.debian.org timeouts on some ECS networks).
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's|deb.debian.org|mirrors.aliyun.com|g;s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|deb.debian.org|mirrors.aliyun.com|g;s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
+    fi; \
+    apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
