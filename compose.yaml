@@ -45,7 +45,7 @@ services:
 
   # 长期记忆与 RAG 向量数据库
   postgres-vector:
-    image: ankane/pgvector:v0.5.1
+    image: pgvector/pgvector:pg16
     container_name: agentflow-postgres
     environment:
       POSTGRES_USER: admin
@@ -64,7 +64,7 @@ services:
 
   # 短期记忆与分布式锁缓存
   redis:
-    image: redis:7-alpine
+    image: public.ecr.aws/docker/library/redis:7-alpine
     container_name: agentflow-redis
     ports:
       - "6379:6379"

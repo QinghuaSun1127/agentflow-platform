@@ -419,8 +419,13 @@ bash scripts/backup-postgres.sh
 
 ### Q2：浏览器报 502 / 521？
 
-- **521**：often Cloudflare 连不上源站 → 检查服务器是否开机、防火墙 443、Nginx 是否运行：`sudo systemctl status nginx`。
-- **502**：Nginx 到后端失败 → `docker compose ps` 看 api 容器是否 healthy；`curl http://127.0.0.1:8000/healthz` 在服务器上测。
+- **521**：Cloudflare **能到你的公网 IP，但连不上你在 80/443 提供服务的程序**（或防火墙拦了）。请在服务器 SSH 里执行自检（项目在 `/root/agentflow-platform` 时）：
+  ```bash
+  cd /root/agentflow-platform   # 按你的实际路径改
+  sudo bash scripts/check-origin-cloudflare.sh
+  ```
+  按输出里 **`[!!]`** 逐项修：**阿里云轻量防火墙**必须放行 TCP **80、443**；`sudo systemctl status nginx` 要是 **running**；`sudo nginx -t` 要能过。
+- **502**：源站 HTTP 通了，但 Nginx **反代到 Docker 失败** → `docker compose ps` 看 api 是否 healthy；服务器上 `curl -sS http://127.0.0.1:8000/healthz`。另：**`/healthz` 在 API 域名**上测：`https://api.你的域名/healthz`，不要用在 `app` 前台域名上强求同一路径。
 
 ### Q3：CORS 错误？
 
