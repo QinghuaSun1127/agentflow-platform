@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import hashlib
+import io
 import math
 import os
 import re
@@ -24,7 +24,7 @@ DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0"))
 DEFAULT_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "650"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
 
-_embeddings_instance: "LocalHashEmbeddings | Any | None" = None
+_embeddings_instance: LocalHashEmbeddings | Any | None = None
 
 
 class LocalHashEmbeddings:
@@ -152,8 +152,7 @@ def init_db() -> None:
     ddl_page_number = "ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS page_number INTEGER;"
     ddl_chunk_index = "ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS chunk_index INTEGER NOT NULL DEFAULT 0;"
     ddl_created_at = (
-        "ALTER TABLE knowledge_base "
-        "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();"
+        "ALTER TABLE knowledge_base ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();"
     )
     ddl_vector_index = """
     CREATE INDEX IF NOT EXISTS idx_knowledge_base_embedding
@@ -497,9 +496,7 @@ def _update_document_status(document_id: int, status: str, chunk_count: int) -> 
 
 # 启动阶段演示数据（与 main.py 生命周期配合，幂等插入）
 _SEED_POLICY_TITLE = "差旅报销政策"
-_SEED_POLICY_CONTENT = (
-    "公司规定高铁只能报销二等座，飞机只能报销经济舱，住宿上限每天 400 元。"
-)
+_SEED_POLICY_CONTENT = "公司规定高铁只能报销二等座，飞机只能报销经济舱，住宿上限每天 400 元。"
 
 
 def seed_travel_policy_demo_if_missing() -> None:
